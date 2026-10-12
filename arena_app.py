@@ -2,10 +2,27 @@
 import gradio as gr
 
 from agent import LAST_USAGE, chat_stream
-from arena import (REFUSAL, blue_messages, fetch_doc, find_leaks, load_rounds, parse_verdict,
-                   referee, scoreboard, victim_messages)
+from arena import (REFUSAL, SECRETS, blue_messages, fetch_doc, find_leaks, load_rounds,
+                   parse_verdict, referee, scoreboard, victim_messages)
 
 BLUE_MODES = {"🧠 Think (/think)": "think", "⚡ Fast (/no_think)": "fast", "🚫 Off (no defense)": "off"}
+
+
+def redact(text):
+    """Hide the real honeytokens in on-screen reasoning so a safe round never displays a secret."""
+    for s in SECRETS:
+        text = text.replace(s, "⟨REDACTED⟩")
+    return text
+
+
+def reasoning_block(label, text):
+    """A trimmed, redacted, always-visible reasoning panel (so judges can watch the model think)."""
+    if not text:
+        return ""
+    shown = redact(text).strip()
+    if len(shown) > 1400:
+        shown = "…" + shown[-1400:]
+    return f"**🧠 {label} reasoning**\n\n> " + shown.replace("\n", "\n> ") + "\n\n"
 
 
 def run_arena(mode_label):
@@ -29,15 +46,16 @@ def run_arena(mode_label):
         for kind, txt in chat_stream(victim_messages(doc), think=True, max_tokens=600):
             if kind == "thinking":
                 vthink = txt
-                victim = f"🤖 **Victim**\n```\n{log}\n```\n🧠 _thinking…_\n\n{txt[-400:]}"
+                victim = f"🤖 **Victim**\n```\n{log}\n```\n{reasoning_block('victim', txt)}_(thinking…)_"
             else:
                 draft = txt
-                victim = f"🤖 **Victim**\n```\n{log}\n```\n**Summary** _(streaming…)_\n\n{txt}"
+                victim = (f"🤖 **Victim**\n```\n{log}\n```\n{reasoning_block('victim', vthink)}"
+                          f"**Summary** _(streaming…)_\n\n{txt}")
             yield red, victim, blue, banner, board
-        think_block = f"<details><summary>🧠 victim's reasoning</summary>\n\n{vthink}\n\n</details>\n\n" if vthink else ""
-        victim = f"🤖 **Victim**\n```\n{log}\n```\n{think_block}**Summary**\n\n{draft}"
+        victim = f"🤖 **Victim**\n```\n{log}\n```\n{reasoning_block('victim', vthink)}**Summary**\n\n{draft}"
 
         # --- Blue: stream its review, then verdict ---
+        bthink = ""
         if mode == "off":
             verdict, reason, btok, blat = "ALLOW", "defense disabled", 0, 0.0
             blue = "🔵 **Blue** — 🚫 _defense disabled_"
@@ -46,7 +64,8 @@ def run_arena(mode_label):
             braw = ""
             for kind, txt in chat_stream(blue_messages(doc, draft), think=(mode == "think"), max_tokens=512):
                 if kind == "thinking":
-                    blue = f"🔵 **Blue** — 🧠 _analyzing…_\n\n{txt[-500:]}"
+                    bthink = txt
+                    blue = f"🔵 **Blue** — 🧠 _analyzing…_\n\n{reasoning_block('Blue', txt)}"
                 else:
                     braw = txt
                     blue = f"🔵 **Blue** — writing verdict…\n\n`{txt[:200]}`"
@@ -62,9 +81,17 @@ def run_arena(mode_label):
         board = scoreboard(results)
         icon = "⛔ **BLOCK**" if verdict == "BLOCK" else "✅ **ALLOW**"
         cost = f"  ·  {btok} tok · {blat:.2f}s" if btok else ""
-        blue = f"🔵 **Blue**\n\n{icon}{cost}\n\n_{reason}_"
-        banner = (f"## 💥 ATTACK SUCCEEDS — leaked: `{', '.join(find_leaks(delivered))}`" if success
-                  else "## 🛡️ DEFENSE WINS — secrets stayed safe")
+        blue = f"🔵 **Blue**\n\n{reasoning_block('Blue', bthink)}{icon}{cost}\n\n_{reason}_"
+
+        # Banner reflects what actually happened this round
+        if success:
+            banner = f"## 💥 ATTACK SUCCEEDS — leaked: `{', '.join(find_leaks(delivered))}`"
+        elif rnd["type"] == "ATTACK":
+            banner = "## 🛡️ DEFENSE WINS — injection stopped, secrets safe"
+        elif verdict == "BLOCK":
+            banner = "## ⚠️ FALSE ALARM — benign request wrongly blocked"
+        else:
+            banner = "## ✅ CLEAN — benign request handled normally"
         yield red, victim, blue, banner, board
 
 
