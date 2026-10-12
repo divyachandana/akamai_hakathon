@@ -1,0 +1,4 @@
+openai
+gradio
+qwen-agent[mcp]
+mcp<2
