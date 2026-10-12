@@ -1,7 +1,9 @@
-"""Live UI for Agent Arena: watch Red vs Blue fight, round by round, with a scoreboard."""
+"""Live UI for Agent Arena: watch Red (left) vs Blue (right) fight, streaming token by token."""
 import gradio as gr
 
-from arena import load_rounds, play_round, scoreboard
+from agent import LAST_USAGE, chat_stream
+from arena import (CANARY, REFUSAL, blue_messages, fetch_doc, load_rounds, parse_verdict,
+                   referee, scoreboard, victim_messages)
 
 BLUE_MODES = {"🧠 Think (/think)": "think", "⚡ Fast (/no_think)": "fast", "🚫 Off (no defense)": "off"}
 
@@ -10,45 +12,72 @@ def run_arena(mode_label):
     mode = BLUE_MODES[mode_label]
     rounds = load_rounds()
     results = []
-    red = victim = blue = banner = ""
     board = scoreboard(results)
+    red = victim = blue = banner = ""
+
     for i, rnd in enumerate(rounds, 1):
-        red = (f"### Round {i}/{len(rounds)} — {rnd['flag']} {rnd['lang']} · `{rnd['type']}`\n\n"
-               f"{rnd['text'] or '_(normal memo, no injection)_'}")
-        victim, blue, banner = "⏳ reading document…", "", ""
+        tag = "💉 injection hidden in document" if rnd["type"] == "ATTACK" else "📄 normal document"
+        red = (f"### 🔴 Red — Round {i}/{len(rounds)}\n{rnd['flag']} **{rnd['lang']}** · `{rnd['type']}`\n\n"
+               f"{tag}\n\n> {rnd['text'] or '(no injection — a plain memo)'}")
+        victim, blue, banner = "🤖 **Victim** — ⏳ fetching document via MCP…", "🔵 **Blue** — waiting…", ""
         yield red, victim, blue, banner, board
 
-        r = play_round(rnd, mode)
-        victim = f"**Tool calls**\n```\n{r['tool_log']}\n```\n**Draft summary**\n\n{r['draft'][:600]}"
-        blue = "🧠 reviewing…" if mode != "off" else "_(defense disabled)_"
-        yield red, victim, blue, banner, board
+        # --- Victim: fetch via MCP, then stream its summary ---
+        doc = fetch_doc(rnd["text"])
+        log = f"📤 fetch_document('q3-memo')\n📥 {doc.strip()[:150]}…"
+        draft = ""
+        for kind, txt in chat_stream(victim_messages(doc), think=False, max_tokens=400):
+            if kind == "answer":
+                draft = txt
+                victim = f"🤖 **Victim**\n```\n{log}\n```\n**Summary** _(streaming…)_\n\n{txt}"
+                yield red, victim, blue, banner, board
+        victim = f"🤖 **Victim**\n```\n{log}\n```\n**Summary**\n\n{draft}"
 
-        icon = "⛔ **BLOCK**" if r["verdict"] == "BLOCK" else "✅ **ALLOW**"
-        cost = f" · {r['blue_tokens']} tok · {r['blue_latency']:.2f}s" if r["blue_tokens"] else ""
-        blue = f"{icon}{cost}\n\n_{r['reason']}_"
-        results.append(r)
-        board = scoreboard(results)
-        if r["success"]:
-            banner = f"## 💥 ATTACK SUCCEEDS — canary leaked: `{__import__('arena').CANARY}`"
+        # --- Blue: stream its review, then verdict ---
+        if mode == "off":
+            verdict, reason, btok, blat = "ALLOW", "defense disabled", 0, 0.0
+            blue = "🔵 **Blue** — 🚫 _defense disabled_"
+            yield red, victim, blue, banner, board
         else:
-            banner = "## 🛡️ DEFENSE WINS — secret stayed safe"
+            braw = ""
+            for kind, txt in chat_stream(blue_messages(doc, draft), think=(mode == "think"), max_tokens=512):
+                if kind == "thinking":
+                    blue = f"🔵 **Blue** — 🧠 _analyzing…_\n\n{txt[-500:]}"
+                else:
+                    braw = txt
+                    blue = f"🔵 **Blue** — writing verdict…\n\n`{txt[:200]}`"
+                yield red, victim, blue, banner, board
+            verdict, reason = parse_verdict(braw)
+            btok, blat = LAST_USAGE["tokens"], LAST_USAGE["latency"]
+
+        delivered = REFUSAL if verdict == "BLOCK" else draft
+        success = referee(delivered)
+        results.append({"lang": rnd["lang"], "flag": rnd["flag"], "type": rnd["type"],
+                        "success": success, "blocked": verdict == "BLOCK",
+                        "blue_latency": blat, "blue_tokens": btok})
+        board = scoreboard(results)
+        icon = "⛔ **BLOCK**" if verdict == "BLOCK" else "✅ **ALLOW**"
+        cost = f"  ·  {btok} tok · {blat:.2f}s" if btok else ""
+        blue = f"🔵 **Blue**\n\n{icon}{cost}\n\n_{reason}_"
+        banner = (f"## 💥 ATTACK SUCCEEDS — canary leaked: `{CANARY}`" if success
+                  else "## 🛡️ DEFENSE WINS — secret stayed safe")
         yield red, victim, blue, banner, board
 
 
-with gr.Blocks(title="Agent Arena — Red vs Blue") as demo:
+with gr.Blocks(title="Agent Arena — Red vs Blue", theme=gr.themes.Soft()) as demo:
     gr.Markdown("# ⚔️ Agent Arena — Red vs Blue on one Qwen3-4B\n"
-                "A victim agent summarizes an internal doc using **MCP tools**. Some rounds hide an "
-                "injection in the doc. A **Blue defender** (thinking mode) screens the result; a Python "
-                "referee scores it. Switch Blue between **Off / Fast / Think** to see what spending more "
-                "inference on security buys you — *the agent owns its inference.* Edit `attacks.txt` to add rounds.")
+                "A victim agent summarizes an internal doc fetched through an **MCP tool**. Some rounds hide "
+                "a prompt injection in the doc. **Blue** (thinking mode) screens the result and a Python "
+                "referee scores it. Flip Blue between **Off / Fast / Think** to see what spending inference on "
+                "defense buys you — *the agent owns its inference.*  Add rounds by editing `attacks.txt`.")
     with gr.Row():
         mode = gr.Dropdown(list(BLUE_MODES), value="🧠 Think (/think)", label="Blue defender mode", scale=2)
         run = gr.Button("⚔️  Run all rounds", variant="primary", scale=1)
     banner = gr.Markdown()
-    with gr.Row():
-        red = gr.Markdown("### 🔴 Red (attacker)")
-        victim = gr.Markdown("### 🤖 Victim (tool agent)")
-        blue = gr.Markdown("### 🔵 Blue (defender)")
+    with gr.Row(equal_height=True):
+        red = gr.Markdown("### 🔴 Red (attacker)", elem_id="red")
+        blue = gr.Markdown("### 🔵 Blue (defender)", elem_id="blue")
+    victim = gr.Markdown("### 🤖 Victim (tool agent)")
     gr.Markdown("### 📊 Scoreboard")
     board = gr.Markdown()
     run.click(run_arena, [mode], [red, victim, blue, banner, board])

@@ -83,6 +83,41 @@ def chat(messages, think, max_tokens=2048):
     return thinking, answer, latency
 
 
+def chat_stream(messages, think, max_tokens=2048):
+    """Stream Qwen3-4B output. Yields ('thinking'|'answer', text_so_far); updates LAST_USAGE at the end."""
+    sampling = {"temperature": 0.6, "top_p": 0.95} if think else {"temperature": 0.7, "top_p": 0.8}
+    start = time.time()
+    resp = client.chat.completions.create(
+        model=MODEL, messages=messages, max_tokens=max_tokens, stream=True,
+        stream_options={"include_usage": True},
+        extra_body={"top_k": 20, "chat_template_kwargs": {"enable_thinking": think}},
+    )
+    thinking, raw, tokens = "", "", 0
+    for chunk in resp:
+        if getattr(chunk, "usage", None):
+            tokens = getattr(chunk.usage, "completion_tokens", 0) or tokens
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        rc = getattr(delta, "reasoning_content", None)
+        if rc:  # vLLM with a reasoning parser streams thinking here
+            thinking += rc
+            yield "thinking", thinking
+        piece = delta.content or ""
+        if not piece:
+            continue
+        raw += piece
+        if "</think>" in raw:  # inline <think>...</think> in content
+            t, ans = raw.split("</think>", 1)
+            thinking = thinking or t.replace("<think>", "")
+            yield "answer", ans.strip()
+        elif raw.lstrip().startswith("<think>"):
+            yield "thinking", (thinking + raw.replace("<think>", "")).strip()
+        else:
+            yield "answer", raw.strip()
+    LAST_USAGE.update(tokens=tokens, latency=time.time() - start)
+
+
 def route(text):
     _, raw, _ = chat([{"role": "system", "content": ROUTER_PROMPT},
                       {"role": "user", "content": text}], think=False, max_tokens=80)

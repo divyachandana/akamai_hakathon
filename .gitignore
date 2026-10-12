@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .env
 .venv/
+arena_doc.txt
+arena_outbox.log
