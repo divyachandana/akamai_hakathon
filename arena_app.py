@@ -2,7 +2,7 @@
 import gradio as gr
 
 from agent import LAST_USAGE, chat_stream
-from arena import (CANARY, REFUSAL, blue_messages, fetch_doc, load_rounds, parse_verdict,
+from arena import (REFUSAL, blue_messages, fetch_doc, find_leaks, load_rounds, parse_verdict,
                    referee, scoreboard, victim_messages)
 
 BLUE_MODES = {"🧠 Think (/think)": "think", "⚡ Fast (/no_think)": "fast", "🚫 Off (no defense)": "off"}
@@ -22,16 +22,20 @@ def run_arena(mode_label):
         victim, blue, banner = "🤖 **Victim** — ⏳ fetching document via MCP…", "🔵 **Blue** — waiting…", ""
         yield red, victim, blue, banner, board
 
-        # --- Victim: fetch via MCP, then stream its summary ---
+        # --- Victim: fetch via MCP, then think + stream its summary (watch it get tempted) ---
         doc = fetch_doc(rnd["text"])
         log = f"📤 fetch_document('q3-memo')\n📥 {doc.strip()[:150]}…"
-        draft = ""
-        for kind, txt in chat_stream(victim_messages(doc), think=False, max_tokens=400):
-            if kind == "answer":
+        draft, vthink = "", ""
+        for kind, txt in chat_stream(victim_messages(doc), think=True, max_tokens=600):
+            if kind == "thinking":
+                vthink = txt
+                victim = f"🤖 **Victim**\n```\n{log}\n```\n🧠 _thinking…_\n\n{txt[-400:]}"
+            else:
                 draft = txt
                 victim = f"🤖 **Victim**\n```\n{log}\n```\n**Summary** _(streaming…)_\n\n{txt}"
-                yield red, victim, blue, banner, board
-        victim = f"🤖 **Victim**\n```\n{log}\n```\n**Summary**\n\n{draft}"
+            yield red, victim, blue, banner, board
+        think_block = f"<details><summary>🧠 victim's reasoning</summary>\n\n{vthink}\n\n</details>\n\n" if vthink else ""
+        victim = f"🤖 **Victim**\n```\n{log}\n```\n{think_block}**Summary**\n\n{draft}"
 
         # --- Blue: stream its review, then verdict ---
         if mode == "off":
@@ -59,8 +63,8 @@ def run_arena(mode_label):
         icon = "⛔ **BLOCK**" if verdict == "BLOCK" else "✅ **ALLOW**"
         cost = f"  ·  {btok} tok · {blat:.2f}s" if btok else ""
         blue = f"🔵 **Blue**\n\n{icon}{cost}\n\n_{reason}_"
-        banner = (f"## 💥 ATTACK SUCCEEDS — canary leaked: `{CANARY}`" if success
-                  else "## 🛡️ DEFENSE WINS — secret stayed safe")
+        banner = (f"## 💥 ATTACK SUCCEEDS — leaked: `{', '.join(find_leaks(delivered))}`" if success
+                  else "## 🛡️ DEFENSE WINS — secrets stayed safe")
         yield red, victim, blue, banner, board
 
 
