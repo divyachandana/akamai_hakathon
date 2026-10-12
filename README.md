@@ -23,18 +23,17 @@ Force an expert with `@character ...`, `@polyglot ...`, etc.
 `get_current_time`, `calculate` (safe arithmetic), `roll_dice`, `fetch_url`
 
 ## Run
+vLLM is already serving Qwen3-4B on the Akamai GPU at `localhost:8000` (OpenAI-compatible). The app talks to it
+with the `openai` client — no extra config needed:
 ```bash
 pip install -r requirements.txt
-export AKAMAI_BASE_URL="http://<your-akamai-vllm-host>:8000/v1"
-export MODEL_NAME="Qwen/Qwen3-4B"        # whatever GET /v1/models returns
 python agent.py "What time is it in Tokyo and what is 23*47?"   # CLI smoke test
-python app.py                                                   # Gradio UI
+python app.py                                                   # Gradio UI -> http://127.0.0.1:7860
 ```
+Different host/model? `export AKAMAI_BASE_URL=http://<host>:8000/v1 MODEL_NAME=Qwen/Qwen3-4B`.
 
-vLLM tool calling needs the server started with:
-```bash
-vllm serve Qwen/Qwen3-4B --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3
-```
-(Older vLLM: `--enable-reasoning --reasoning-parser deepseek_r1`.) The agent also handles `<think>` left inside content.
+Tool calling goes through Qwen-Agent's own function-calling template, so vLLM needs no tool-parser flags.
+Thinking is switched per request with `chat_template_kwargs.enable_thinking`; `<think>` blocks are parsed whether
+or not vLLM runs a reasoning parser. Each answer shows latency, completion tokens and tokens/sec from vLLM.
 
 Sampling follows the Qwen3 model card: thinking temp 0.6 / top_p 0.95, non-thinking temp 0.7 / top_p 0.8, top_k 20.

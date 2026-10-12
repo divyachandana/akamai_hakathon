@@ -7,7 +7,7 @@ import time
 
 from openai import OpenAI
 
-BASE_URL = os.getenv("AKAMAI_BASE_URL", "http://localhost:8000/v1")  # your Akamai vLLM endpoint, ending in /v1
+BASE_URL = os.getenv("AKAMAI_BASE_URL", "http://localhost:8000/v1")  # vLLM on Akamai GPU (OpenAI-compatible)
 API_KEY = os.getenv("AKAMAI_API_KEY", "EMPTY")
 MODEL = os.getenv("MODEL_NAME", "Qwen/Qwen3-4B")  # must match the name vLLM serves (GET /v1/models)
 
@@ -66,6 +66,9 @@ def split_thinking(msg):
     return thinking.strip(), content.strip()
 
 
+LAST_USAGE = {"tokens": 0, "latency": 0.0}
+
+
 def chat(messages, think, max_tokens=2048):
     """One call to Qwen3-4B, using the model card's sampling settings for each mode."""
     sampling = {"temperature": 0.6, "top_p": 0.95} if think else {"temperature": 0.7, "top_p": 0.8}
@@ -75,7 +78,9 @@ def chat(messages, think, max_tokens=2048):
         extra_body={"top_k": 20, "chat_template_kwargs": {"enable_thinking": think}},
     )
     thinking, answer = split_thinking(resp.choices[0].message)
-    return thinking, answer, time.time() - start
+    latency = time.time() - start
+    LAST_USAGE.update(tokens=getattr(resp.usage, "completion_tokens", 0) or 0, latency=latency)
+    return thinking, answer, latency
 
 
 def route(text):
@@ -157,8 +162,9 @@ def handle(text, history=None):
         tool_log = ""
         messages = [{"role": "system", "content": EXPERTS[expert]["system"]}] + turns
         thinking, answer, latency = chat(messages, think)
+    tokens = LAST_USAGE["tokens"] if expert != "tool_agent" else 0
 
-    return {"expert": expert, "reason": reason, "think": think, "thinking": thinking,
+    return {"tokens": tokens, "tok_s": tokens / latency if latency and tokens else 0,"expert": expert, "reason": reason, "think": think, "thinking": thinking,
             "answer": answer, "latency": latency, "tool_log": tool_log, "text": text}
 
 
@@ -169,14 +175,15 @@ def compare_modes(text):
         msgs = [{"role": "system", "content": EXPERTS["reasoner"]["system"]},
                 {"role": "user", "content": text}]
         thinking, answer, latency = chat(msgs, think)
-        out[think] = (thinking, answer, latency)
+        out[think] = (thinking, answer, latency, LAST_USAGE["tokens"])
     return out
 
 
 if __name__ == "__main__":
     q = " ".join(sys.argv[1:]) or "What time is it in Tokyo, and what is 23*47?"
     r = handle(q)
-    print(f"[{r['expert']}] think={r['think']} {r['latency']:.2f}s — {r['reason']}")
+    print(f"server: {BASE_URL}  model: {MODEL}")
+    print(f"[{r['expert']}] think={r['think']} {r['latency']:.2f}s {r['tokens']} tok — {r['reason']}")
     if r["tool_log"]:
         print(r["tool_log"])
     print(r["answer"])

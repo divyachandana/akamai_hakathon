@@ -29,6 +29,7 @@ def respond(text, history, transcript):
     transcript = (transcript + f"\n\n**🧑 You:** {text}\n\n**{e['emoji']} {r['expert']}:** {r['answer']}\n\n---")
     mode = "🧠 thinking **ON**" if r["think"] else "⚡ thinking **OFF**"
     badge = (f"## {e['emoji']} {r['expert']}\n**Skill:** {e['skill']}  \n{mode} · ⏱️ **{r['latency']:.2f}s**"
+             + (f" · 🔢 {r['tokens']} tokens · ⚡ {r['tok_s']:.0f} tok/s" if r["tokens"] else "") +
              f"  \n_Router: {r['reason']}_")
     thinking = r["thinking"] or "_(no thinking — fast mode)_"
     tools = r["tool_log"] or "_(no tool calls)_"
@@ -39,10 +40,10 @@ def compare(text):
     if not text or not text.strip():
         return "Type a question in the box first."
     out = compare_modes(text)
-    t_on, a_on, l_on = out[True]
-    _, a_off, l_off = out[False]
-    return (f"### 🧠 Thinking ON — {l_on:.2f}s ({len(t_on.split())} thinking words)\n{a_on}\n\n"
-            f"### ⚡ Thinking OFF — {l_off:.2f}s\n{a_off}\n\n"
+    t_on, a_on, l_on, k_on = out[True]
+    _, a_off, l_off, k_off = out[False]
+    return (f"### 🧠 Thinking ON — {l_on:.2f}s · {k_on} tokens ({len(t_on.split())} thinking words)\n{a_on}\n\n"
+            f"### ⚡ Thinking OFF — {l_off:.2f}s · {k_off} tokens\n{a_off}\n\n"
             f"**Same model, same weights — one flag switched. Speedup: {l_on / max(l_off, 0.01):.1f}x**")
 
 
