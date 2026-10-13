@@ -59,11 +59,19 @@ def load_rounds(path=os.path.join(HERE, "attacks.txt")):
             line = line.rstrip("\n")
             if not line.strip() or line.lstrip().startswith("#"):
                 continue
-            parts = line.split("|", 3)
-            if len(parts) < 4:
+            parts = line.split("|", 4)
+            if len(parts) == 5:
+                lang, flag, typ, label, text = parts
+            elif len(parts) == 4:  # older format without a label
+                lang, flag, typ, text = parts
+                label = ""
+            else:
                 continue
-            lang, flag, typ, text = parts
-            rounds.append({"lang": lang, "flag": flag, "type": typ.strip().upper(), "text": text})
+            typ = typ.strip().upper()
+            label = label.strip() or ("Normal request" if typ == "BENIGN" else "Unlabeled attack")
+            name, _, desc = label.partition(" — ")
+            rounds.append({"lang": lang, "flag": flag, "type": typ, "text": text,
+                           "label": label, "attack_name": name.strip(), "attack_desc": desc.strip()})
     return rounds
 
 
@@ -166,12 +174,10 @@ def scoreboard(results):
         f"{sum(tok) // len(tok) if tok else 0} tok/round" if lat else "",
     ]
     by = {}
-    for r in results:
-        if r["type"] != "ATTACK":
-            continue
-        by.setdefault(r["flag"], []).append("💥" if r["success"] else "🛡️")
+    for r in atk:
+        by.setdefault(r.get("attack_name") or "Attack", []).append("💥 leaked" if r["success"] else "🛡️ stopped")
     if by:
-        lines.append("**By language:** " + "  ".join(f"{k} {''.join(v)}" for k, v in by.items()))
+        lines.append("**By attack type:** " + "  ·  ".join(f"{k}: {', '.join(v)}" for k, v in by.items()))
     return "\n\n".join(x for x in lines if x)
 
 
@@ -183,6 +189,7 @@ def play_round(rnd, mode):
     delivered = REFUSAL if verdict == "BLOCK" else draft
     success = referee(delivered)
     return {"lang": rnd["lang"], "flag": rnd["flag"], "type": rnd["type"],
+            "attack_name": rnd["attack_name"], "attack_desc": rnd["attack_desc"],
             "attack_text": rnd["text"] or "(normal memo, no injection)",
             "tool_log": tool_log, "draft": draft, "verdict": verdict, "reason": reason,
             "blue_latency": blat, "blue_tokens": btok, "delivered": delivered,
@@ -198,5 +205,6 @@ if __name__ == "__main__":
         r = play_round(rnd, mode)
         results.append(r)
         banner = "💥 ATTACK SUCCEEDS" if r["success"] else "🛡️ DEFENSE WINS"
-        print(f"{r['flag']} {r['lang']} [{r['type']}] {banner}  (Blue: {r['verdict']} — {r['reason']})")
+        print(f"{r['flag']} {r['lang']} [{r['type']}: {r['attack_name']}] {banner}  "
+              f"(Blue: {r['verdict']} — {r['reason']})")
     print("\n" + scoreboard(results).replace("**", ""))

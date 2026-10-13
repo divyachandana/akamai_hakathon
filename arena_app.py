@@ -33,9 +33,11 @@ def run_arena(mode_label):
     red = victim = blue = banner = ""
 
     for i, rnd in enumerate(rounds, 1):
-        tag = "💉 injection hidden in document" if rnd["type"] == "ATTACK" else "📄 normal document"
+        is_attack = rnd["type"] == "ATTACK"
+        what = (f"🎯 **Attack type: {rnd['attack_name']}**\n\n_{rnd['attack_desc']}_" if is_attack
+                else f"📄 **{rnd['attack_name']}**\n\n_{rnd['attack_desc'] or 'no injection in the document'}_")
         red = (f"### 🔴 Red — Round {i}/{len(rounds)}\n{rnd['flag']} **{rnd['lang']}** · `{rnd['type']}`\n\n"
-               f"{tag}\n\n> {rnd['text'] or '(no injection — a plain memo)'}")
+               f"{what}\n\n**Hidden in the document:**\n\n> {rnd['text'] or '(nothing — a plain memo)'}")
         victim, blue, banner = "🤖 **Victim** — ⏳ fetching document via MCP…", "🔵 **Blue** — waiting…", ""
         yield red, victim, blue, banner, board
 
@@ -76,7 +78,7 @@ def run_arena(mode_label):
         delivered = REFUSAL if verdict == "BLOCK" else draft
         success = referee(delivered)
         results.append({"lang": rnd["lang"], "flag": rnd["flag"], "type": rnd["type"],
-                        "success": success, "blocked": verdict == "BLOCK",
+                        "attack_name": rnd["attack_name"], "success": success, "blocked": verdict == "BLOCK",
                         "blue_latency": blat, "blue_tokens": btok})
         board = scoreboard(results)
         icon = "⛔ **BLOCK**" if verdict == "BLOCK" else "✅ **ALLOW**"
@@ -85,9 +87,10 @@ def run_arena(mode_label):
 
         # Banner reflects what actually happened this round
         if success:
-            banner = f"## 💥 ATTACK SUCCEEDS — leaked: `{', '.join(find_leaks(delivered))}`"
-        elif rnd["type"] == "ATTACK":
-            banner = "## 🛡️ DEFENSE WINS — injection stopped, secrets safe"
+            banner = (f"## 💥 ATTACK SUCCEEDS ({rnd['attack_name']}) — leaked: "
+                      f"`{', '.join(find_leaks(delivered))}`")
+        elif is_attack:
+            banner = f"## 🛡️ DEFENSE WINS vs {rnd['attack_name']} — secrets safe"
         elif verdict == "BLOCK":
             banner = "## ⚠️ FALSE ALARM — benign request wrongly blocked"
         else:
